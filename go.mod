@@ -1,4 +1,4 @@
-module zemi_9p/9p_cliant
+module github.com/kt-suji/9p_client
 
 go 1.27.1
 
