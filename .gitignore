@@ -1,0 +1,25 @@
+# Binaries & Object Files
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.syso
+
+# Logs & Temp files
+*.log
+*.tmp
+*.old
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# PDFs & Docs artifacts
+*.pdf
+
+# OS generated
+.DS_Store
+Thumbs.db
