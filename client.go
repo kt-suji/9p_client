@@ -1,77 +1,175 @@
 package main
 
 import (
-	"io"
+	"flag"
+	"fmt"
 	"log"
 	"net"
+	"os"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/knusbaum/go9p/client"
-	"github.com/knusbaum/go9p/proto"
 )
 
-func readFile(c *client.Client, path string) string {
-	// proto.Oread を指定
-	f, err := c.Open(path, proto.Oread)
-	if err != nil {
-		log.Fatalf("Open failed (%s): %v", path, err)
-	}
-	defer f.Close()
-
-	buf, err := io.ReadAll(f)
-	if err != nil {
-		log.Fatalf("Read failed (%s): %v", path, err)
-	}
-	return string(buf)
-}
-
-func writeFile(c *client.Client, path string, data string) {
-	// proto.Owrite を指定
-	f, err := c.Open(path, proto.Owrite)
-	if err != nil {
-		log.Fatalf("Open failed (%s): %v", path, err)
-	}
-	defer f.Close()
-
-	_, err = f.Write([]byte(data))
-	if err != nil {
-		log.Fatalf("Write failed (%s): %v", path, err)
-	}
-}
+// defaultStartMode はビルド時の -ldflags="-X main.defaultStartMode=gui" で切り替え可能。
+// - 9p_client.exe / 9p_client_linux     : "cui" (デフォルトで番号選択式 CUI コントロールセンターを起動)
+// - 9p_client_gui.exe / 9p_client_gui_linux : "gui" (デフォルトで GUI エクスプローラーを起動)
+var defaultStartMode = "cui"
 
 func main() {
-	serverAddr := "winserver:5640"
+	runtime.LockOSThread()
 
-	// 1. TCP接続を確立
-	conn, err := net.Dial("tcp", serverAddr)
-	if err != nil {
-		log.Fatalf("TCP接続エラー: %v", err)
-	}
-	defer conn.Close()
-
-	// 2. 9Pクライアントを初期化 (conn, user, aname)
-	c, err := client.NewClient(conn, "user", "")
-	if err != nil {
-		log.Fatalf("9P初期化エラー: %v", err)
+	// 実行ファイル名に "gui" が含まれている場合は自動的に GUI モードをデフォルトにする
+	if len(os.Args) > 0 && strings.Contains(strings.ToLower(os.Args[0]), "gui") {
+		defaultStartMode = "gui"
 	}
 
-	// 3. 状態確認（Read）
-	log.Println("--- 1. 初期状態を確認 ---")
-	log.Printf("ctl/bench の内容:\n%s", readFile(c, "ctl/bench"))
+	cfg := loadClientConfig("config.yaml")
 
-	// 4. ベンチマーク開始要求（Write）
-	log.Println("--- 2. ベンチマークを開始 (Write: 'start') ---")
-	writeFile(c, "ctl/bench", "start\n")
+	flagAddr := flag.String("addr", "", "サーバーアドレス (例: winserver:5640)")
+	flagMount := flag.String("mount", "", "指定ドライブ/パスにフォアグラウンドでマウント (例: P: または /mnt/9p)")
+	flagAgent := flag.Bool("agent", false, "ヘッドレスエージェントモードで常駐 (心拍・ベンチ・仮想ターミナル待受)")
+	flagGUI := flag.Bool("gui", false, "GUIエクスプローラーを起動")
+	flagCUI := flag.Bool("cui", false, "番号選択式 CUI コントロールセンターを起動")
+	flagTray := flag.Bool("tray", false, "タスクトレイ常駐モードで起動 (GUI)")
+	flag.Parse()
 
-	// 5. 実行中のステータス確認
-	time.Sleep(500 * time.Millisecond)
-	log.Printf("実行中確認:\n%s", readFile(c, "ctl/bench"))
+	targetAddr := cfg.Client.ServerAddr
+	if *flagAddr != "" {
+		targetAddr = *flagAddr
+	}
+	cfg.Client.ServerAddr = targetAddr
 
-	// 6. 完了待ち（サーバー側は約5秒の計算）
-	log.Println("--- 3. 処理完了を待機中... ---")
-	time.Sleep(6 * time.Second)
+	// CLIサブコマンド判定 (cat, write, ls, shell, bench, exec, status, cui)
+	args := flag.Args()
+	if len(args) > 0 {
+		cmd := strings.ToLower(args[0])
 
-	// 7. 実行結果を取得（Read）
-	log.Println("--- 4. 実行結果を取得 ---")
-	log.Printf("完了後ステータス:\n%s", readFile(c, "ctl/bench"))
+		conn, err := net.DialTimeout("tcp", targetAddr, 3*time.Second)
+		if err != nil {
+			log.Fatalf("[ERROR] サーバー接続エラー (%s): %v\n", targetAddr, err)
+		}
+		defer conn.Close()
+
+		c, err := client.NewClient(conn, "user", "")
+		if err != nil {
+			log.Fatalf("[ERROR] 9P初期化エラー: %v\n", err)
+		}
+
+		switch cmd {
+		case "cat":
+			if len(args) < 2 {
+				fmt.Println("使用法: 9p_client cat <path>")
+				return
+			}
+			runCat(c, args[1])
+			return
+
+		case "write", "echo":
+			if len(args) < 3 {
+				fmt.Println("使用法: 9p_client write <path> <content>")
+				return
+			}
+			runWrite(c, args[1], strings.Join(args[2:], " ")+"\n")
+			return
+
+		case "ls":
+			path := ""
+			if len(args) > 1 {
+				path = args[1]
+			}
+			runLs(c, path)
+			return
+
+		case "status":
+			runCat(c, "cluster/status")
+			return
+
+		case "exec":
+			if len(args) < 3 {
+				fmt.Println("使用法: 9p_client exec <server|client_hostname> <command>")
+				return
+			}
+			target := strings.ToLower(strings.TrimSpace(args[1]))
+			execPath := "server/ctl/exec"
+			if target != "server" {
+				execPath = fmt.Sprintf("client/%s/ctl/exec", strings.TrimPrefix(target, "client/"))
+			}
+			cmdStr := strings.Join(args[2:], " ")
+			runWrite(c, execPath, cmdStr+"\n")
+			time.Sleep(1500 * time.Millisecond)
+			runCat(c, execPath)
+			return
+
+		case "shell":
+			runInteractiveShell(c)
+			return
+
+		case "cui":
+			runCUIControlCenter(c, cfg)
+			return
+
+		case "bench":
+			runDefaultBenchTest(c)
+			return
+
+		default:
+			fmt.Printf("未知のサブコマンド: %s\n", cmd)
+			fmt.Println("利用可能: status, bench, exec, cui, shell, cat, write, ls")
+			return
+		}
+	}
+
+	// ヘッドレスエージェント指定時
+	if *flagAgent {
+		c, _ := dial9PClient(targetAddr, 2*time.Second)
+		startClientTelemetryReporter(c, targetAddr)
+		log.Printf("[AGENT] ヘッドレスエージェント稼働中 (接続先: %s)... (終了は Ctrl+C)\n", targetAddr)
+		select {}
+	}
+
+	// フォアグラウンドマウント指定時
+	if *flagMount != "" {
+		c, err := dial9PClient(targetAddr, 3*time.Second)
+		if err != nil {
+			log.Fatalf("[ERROR] サーバー接続エラー: %v\n", err)
+		}
+		startClientTelemetryReporter(c, targetAddr)
+		StartMountBlocking(
+			c,
+			*flagMount,
+			cfg.Server.Disk.TotalBytes,
+			cfg.Server.Disk.FreeBytes,
+			cfg.Client.VolumeLabel,
+			cfg.Client.MountAsNetwork,
+		)
+		return
+	}
+
+	// 起動モード決定 (CUI vs GUI)
+	mode := defaultStartMode
+	if *flagGUI || *flagTray {
+		mode = "gui"
+	}
+	if *flagCUI {
+		mode = "cui"
+	}
+
+	c, err := dial9PClient(targetAddr, 2*time.Second)
+	if err != nil {
+		log.Printf("[WARN] サーバー (%s) への初回接続保留: %v (バックグラウンドで自動再接続します)\n", targetAddr, err)
+	} else {
+		log.Printf("[INFO] サーバー (%s) に正常接続しました\n", targetAddr)
+	}
+
+	if mode == "gui" {
+		ensureSingleInstance("Local\\9P_Client_Exclusive_Instance_2240161")
+		RunNativeApplication(c, cfg)
+		return
+	}
+
+	// CUI版 (9p_client.exe / 9p_client_linux) は番号選択式 CUI コントロールセンターを起動
+	runCUIControlCenter(c, cfg)
 }

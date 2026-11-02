@@ -1,0 +1,36 @@
+server:
+    disk:
+        capacity_display: 2000PB
+        free_bytes: 177621969303492362
+        smart:
+            available_spare: 1
+            device_model: UNCHI SSHD
+            firmware_version: 5B2QGXA7
+            health_percent: 0
+            health_status: BAD
+            interface: NVM Express (9P2000.L Remote)
+            power_on_count: 99999
+            power_on_hours: 114514
+            reallocated_sectors: 999
+            serial_number: S5GXNF0R123456Z
+            temperature_c: 200
+            total_reads_tb: 9999
+            total_writes_tb: 1000
+            transfer_mode: PCIe 4.0 x4 | PCIe 4.0 x4
+            unsafe_shutdowns: 66666
+        total_bytes: 2251799813685248000
+    listen_addr: :5640
+    memory:
+        total_display: 64GB
+        used_percent: 28.5
+        virtual_mode: true
+    system:
+        hostname: winserver
+        os_info: Windows 11 Pro 64-bit
+client:
+    auto_mount_on_tray: true
+    gui_port: 5641
+    mount_as_network: false
+    mount_drive: 'P:'
+    server_addr: winserver:5640
+    volume_label: UNCHI SSHD
